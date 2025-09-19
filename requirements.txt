@@ -1,0 +1,8 @@
+mobsfscan
+chromadb
+langchain-chroma
+langchain-openai
+langchain
+openai
+pydantic
+rich
