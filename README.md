@@ -18,21 +18,21 @@ Zodiac is an enterprise-grade Android security analysis framework powered by Lan
 
 
 
-- **Multi-Agent Architecture\*\*: Specialized agents for decompilation, scanning, validation, and reporting
+- **Multi-Agent Architecture**: Specialized agents for decompilation, scanning, validation, and reporting
 
-- **AI-Powered Analysis\*\*: LangChain integration for intelligent finding validation and insights
+- **AI-Powered Analysis**: LangChain integration for intelligent finding validation and insights
 
-- **False Positive Reduction\*\*: Advanced validation engine to minimize false positives
+- **False Positive Reduction**: Advanced validation engine to minimize false positives
 
-- **RAG System\*\*: Vector-based retrieval for contextual security analysis
+- **RAG System**: Vector-based retrieval for contextual security analysis
 
-- **Multiple Scanners\*\*: Integrates MobSFScan, Semgrep, and custom pattern detection
+- **Multiple Scanners**: Integrates MobSFScan, Semgrep, and custom pattern detection
 
-- **Source Context Analysis\*\*: Deep code analysis for accurate vulnerability assessment
+- **Source Context Analysis**: Deep code analysis for accurate vulnerability assessment
 
-- **Comprehensive Reports\*\*: Generate reports in JSON, HTML, and Markdown formats
+- **Comprehensive Reports**: Generate reports in JSON, HTML, and Markdown formats
 
-- **Enterprise Ready\*\*: Scalable, modular architecture with extensive logging
+- **Enterprise Ready**: Scalable, modular architecture with extensive logging
 
 
 
