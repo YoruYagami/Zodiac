@@ -1,0 +1,59 @@
+zodiac/
+├── README.md
+├── requirements.txt
+├── setup.py
+├── .env.example
+├── config/
+│   ├── __init__.py
+│   ├── settings.py
+│   └── logging_config.py
+├── zodiac/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── models.py
+│   │   ├── exceptions.py
+│   │   └── constants.py
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── base_agent.py
+│   │   ├── decompiler_agent.py
+│   │   ├── scanner_agent.py
+│   │   ├── validator_agent.py
+│   │   ├── source_analyzer_agent.py
+│   │   └── report_agent.py
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── apk_tools.py
+│   │   ├── source_tools.py
+│   │   └── validation_tools.py
+│   ├── rag/
+│   │   ├── __init__.py
+│   │   ├── vectorstore_manager.py
+│   │   ├── document_processor.py
+│   │   └── query_engine.py
+│   ├── pipeline/
+│   │   ├── __init__.py
+│   │   ├── orchestrator.py
+│   │   └── workflow.py
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── file_utils.py
+│   │   ├── hash_utils.py
+│   │   └── logger.py
+│   └── reports/
+│       ├── __init__.py
+│       ├── generator.py
+│       └── templates/
+│           └── security_report.html
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── unit/
+│   │   └── test_agents.py
+│   └── integration/
+│       └── test_pipeline.py
+└── examples/
+    ├── analyze_apk.py
+    └── sample_apks/
