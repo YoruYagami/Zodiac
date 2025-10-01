@@ -41,27 +41,20 @@ class Settings(BaseSettings):
     temp_dir: Path = Field(Path("/tmp/zodiac"), env="TEMP_DIR")
     reports_dir: Path = Field(Path.cwd() / "reports", env="REPORTS_DIR")
     
-    # OpenRouter/OpenAI Configuration
+    # OpenAI Configuration
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
-    openai_base_url: str = Field(
-        "https://openrouter.ai/api/v1", 
-        env="OPENAI_BASE_URL"
-    )
-    openrouter_referrer: str = Field(
-        "https://local.dev", 
-        env="OPENROUTER_REFERRER"
-    )
-    openrouter_title: str = Field(
-        "Zodiac Android Security", 
-        env="OPENROUTER_TITLE"
-    )
+    openai_base_url: Optional[str] = Field(default=None, env="OPENAI_BASE_URL")
     
     # LLM Models
-    llm_model: str = Field("openai/gpt-4o", env="LLM_MODEL")
+    llm_model: str = Field("gpt-5-mini-2025-08-07", env="LLM_MODEL")
     embedding_model: str = Field(
-        "openai/text-embedding-3-large", 
+        "text-embedding-3-large", 
         env="EMBEDDING_MODEL"
     )
+------- 
+    def get_llm_headers(self) -> Dict[str, str]:
+        """Get headers for OpenAI API (currently none required)"""
+        return {}
     llm_temperature: float = Field(0.0, env="LLM_TEMPERATURE")
     llm_max_tokens: int = Field(2000, env="LLM_MAX_TOKENS")
     
@@ -111,11 +104,8 @@ class Settings(BaseSettings):
         case_sensitive = False
         
     def get_llm_headers(self) -> Dict[str, str]:
-        """Get headers for OpenRouter API"""
-        return {
-            "HTTP-Referer": self.openrouter_referrer,
-            "X-Title": self.openrouter_title,
-        }
+        """Get headers for OpenAI API (currently none required)"""
+        return {}
     
     def get_analysis_config(self) -> Dict[str, Any]:
         """Get analysis-specific configuration"""

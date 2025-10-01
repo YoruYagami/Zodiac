@@ -6,7 +6,7 @@ Handles document indexing, retrieval, and querying using ChromaDB
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime
 import json
 

@@ -29,18 +29,21 @@ from pydantic import BaseModel, Field
 import hashlib
 import tempfile
 import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 console = Console()
 
-# ===================== Config RAG (OpenRouter via OpenAI-compatible) =====================
+# ===================== Config RAG (OpenAI) =====================
 # Usa variabili d'ambiente:
-# - OPENAI_API_KEY: chiave OpenRouter
-# - OPENAI_BASE_URL: https://openrouter.ai/api/v1
-OPENROUTER_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_HEADERS = {
-    "HTTP-Referer": os.getenv("OPENROUTER_REFERRER", "https://local.dev"),
-    "X-Title": os.getenv("OPENROUTER_TITLE", "Android Security Agent"),
-}
+# - OPENAI_API_KEY: chiave OpenAI
+# - OPENAI_LLM_MODEL (opzionale): override modello LLM
+# - OPENAI_EMBEDDING_MODEL (opzionale): override modello di embedding
+DEFAULT_OPENAI_LLM_MODEL = os.getenv("OPENAI_LLM_MODEL", "gpt-5-mini-2025-08-07")
+DEFAULT_OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ===================== LangChain imports =====================
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -50,21 +53,28 @@ from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import Document
 
-# ===================== Helper OpenRouter builders =====================
-def build_openrouter_llm(model: str):
-    return ChatOpenAI(
-        model=model,
-        temperature=0,
-        max_tokens=1000,
-        base_url=OPENROUTER_BASE_URL,
-        default_headers=OPENROUTER_HEADERS,
-    )
+# ===================== Helper OpenAI builders =====================
+def build_openai_llm(model: Optional[str] = None):
+    llm_kwargs: Dict[str, Any] = {
+        "model": model or DEFAULT_OPENAI_LLM_MODEL,
+        "temperature": 0,
+        "max_tokens": 1000,
+    }
+    if OPENAI_BASE_URL:
+        llm_kwargs["base_url"] = OPENAI_BASE_URL
+    if OPENAI_API_KEY:
+        llm_kwargs["api_key"] = OPENAI_API_KEY
+    return ChatOpenAI(**llm_kwargs)
 
-def build_openrouter_embeddings(embedding_model: str = "openai/text-embedding-3-large"):
-    return OpenAIEmbeddings(
-        model=embedding_model,
-        base_url=OPENROUTER_BASE_URL,
-    )
+def build_openai_embeddings(embedding_model: Optional[str] = None):
+    embedding_kwargs: Dict[str, Any] = {
+        "model": embedding_model or DEFAULT_OPENAI_EMBEDDING_MODEL,
+    }
+    if OPENAI_BASE_URL:
+        embedding_kwargs["base_url"] = OPENAI_BASE_URL
+    if OPENAI_API_KEY:
+        embedding_kwargs["api_key"] = OPENAI_API_KEY
+    return OpenAIEmbeddings(**embedding_kwargs)
 
 # ===================== Validation Config =====================
 class ValidationLevel(Enum):
@@ -124,6 +134,8 @@ class APKDecompiler:
         self.work_dir = work_dir
         self.source_dir = work_dir / "source"
         self.source_dir.mkdir(exist_ok=True)
+        self.apktool_path = os.getenv("APKTOOL_PATH")
+        self.jadx_path = os.getenv("JADX_PATH")
 
     def decompile(self, apk_path: Path) -> Path:
         console.print("[bold blue]Decompiling APK...[/bold blue]")
@@ -137,34 +149,137 @@ class APKDecompiler:
             sys.exit(1)
 
     def _has_jadx(self) -> bool:
+        if self.jadx_path:
+            candidate = Path(self.jadx_path)
+            if candidate.suffix.lower() == ".jar":
+                return candidate.exists()
+            if candidate.exists():
+                return True
+            return shutil.which(self.jadx_path) is not None
         return shutil.which("jadx") is not None
 
     def _has_apktool(self) -> bool:
+        if self.apktool_path:
+            candidate = Path(self.apktool_path)
+            if candidate.suffix.lower() == ".jar":
+                return candidate.exists()
+            if candidate.exists():
+                return True
+            return shutil.which(self.apktool_path) is not None
         return shutil.which("apktool") is not None
+
+    def _apktool_command(self) -> List[str]:
+        if self.apktool_path:
+            candidate = Path(self.apktool_path)
+            if candidate.suffix.lower() == ".jar":
+                return ["java", "-jar", str(candidate)]
+            return [str(candidate)]
+        inferred = self._default_windows_apktool()
+        if inferred:
+            if inferred.suffix.lower() == ".jar":
+                return ["java", "-jar", str(inferred)]
+            return [str(inferred)]
+        return ["apktool"]
+
+    def _default_windows_apktool(self) -> Optional[Path]:
+        if os.name != "nt":
+            return None
+        common_locations = [
+            Path("C:/Windows/System32/apktool.bat"),
+            Path("C:/Windows/apktool.bat"),
+            Path("C:/Program Files/apktool/apktool.jar"),
+            Path("C:/Program Files (x86)/apktool/apktool.jar"),
+        ]
+        for location in common_locations:
+            if location.exists():
+                return location
+        return None
+
+    def _jadx_command(self) -> List[str]:
+        if self.jadx_path:
+            candidate = Path(self.jadx_path)
+            if candidate.suffix.lower() == ".jar":
+                return ["java", "-jar", str(candidate)]
+            return [str(candidate)]
+        return ["jadx"]
 
     def _decompile_apktool(self, apk_path: Path) -> Path:
         output_dir = self.source_dir / "apktool_output"
         if output_dir.exists():
             shutil.rmtree(output_dir)
-        cmd = ["apktool", "d", "-f", "-o", str(output_dir), str(apk_path)]
-        console.print("[dim]apktool decompiling...[/dim]")
+        
+        # Comandi apktool con opzioni ottimizzate per velocità
+        cmd = self._apktool_command() + [
+            "d", "-f", 
+            "--no-debug-info",  # Skip debug info per velocità
+            "--no-assets",      # Skip assets se non necessari
+            "-o", str(output_dir), 
+            str(apk_path)
+        ]
+        
+        console.print(f"[dim]apktool decompiling {apk_path.name} (timeout: 300s)...[/dim]")
+        
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            if result.returncode != 0 and result.stderr:
-                console.print(f"[yellow]apktool stderr: {result.stderr[:400]}[/yellow]")
-            smali_count = len(list(output_dir.rglob("*.smali")))
-            xml_count = len(list(output_dir.rglob("*.xml")))
-            console.print(f"[green]✓ Decompiled: {smali_count} smali, {xml_count} xml[/green]")
-        except subprocess.TimeoutExpired:
-            console.print("[yellow]apktool timeout[/yellow]")
+            # Aumentato timeout e aggiunto output in tempo reale
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Monitora il processo con timeout più lungo
+            try:
+                stdout, stderr = process.communicate(timeout=300)  # 5 minuti
+                
+                if process.returncode != 0:
+                    console.print(f"[yellow]apktool exit code: {process.returncode}[/yellow]")
+                    if stderr:
+                        console.print(f"[yellow]apktool stderr: {stderr[:500]}[/yellow]")
+                    
+                    # Se fallisce, prova JADX come fallback
+                    if not output_dir.exists() or not any(output_dir.iterdir()):
+                        console.print("[yellow]apktool failed, trying JADX fallback[/yellow]")
+                        return self._decompile_jadx(apk_path)
+                
+                # Verifica risultati
+                if output_dir.exists():
+                    smali_count = len(list(output_dir.rglob("*.smali")))
+                    xml_count = len(list(output_dir.rglob("*.xml")))
+                    console.print(f"[green]✓ Decompiled: {smali_count} smali, {xml_count} xml[/green]")
+                else:
+                    console.print("[yellow]apktool completed but no output directory found[/yellow]")
+                    return self._decompile_jadx(apk_path)
+                    
+            except subprocess.TimeoutExpired:
+                console.print("[yellow]apktool timeout after 5 minutes, terminating...[/yellow]")
+                process.kill()
+                process.wait()
+                
+                # Verifica se ha prodotto risultati parziali
+                if output_dir.exists() and any(output_dir.iterdir()):
+                    console.print("[yellow]Using partial apktool results[/yellow]")
+                else:
+                    console.print("[yellow]apktool timeout, trying JADX fallback[/yellow]")
+                    return self._decompile_jadx(apk_path)
+                    
+        except FileNotFoundError:
+            console.print("[yellow]apktool command not found, attempting JADX fallback[/yellow]")
+            return self._decompile_jadx(apk_path)
+        except Exception as e:
+            console.print(f"[yellow]apktool error: {e}, trying JADX fallback[/yellow]")
+            return self._decompile_jadx(apk_path)
+            
         return output_dir
 
     def _decompile_jadx(self, apk_path: Path) -> Path:
         output_dir = self.source_dir / "jadx_output"
         if output_dir.exists():
             shutil.rmtree(output_dir)
-        cmd = [
-            "jadx", "-d", str(output_dir),
+        cmd = self._jadx_command() + [
+            "-d", str(output_dir),
             "--no-res", "--no-debug-info",
             "--threads", "4", str(apk_path)
         ]
@@ -175,6 +290,11 @@ class APKDecompiler:
                 console.print(f"[yellow]jadx stderr: {result.stderr[:400]}[/yellow]")
             java_count = len(list(output_dir.rglob("*.java")))
             console.print(f"[green]✓ Decompiled: {java_count} java files[/green]")
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "JADX executable not found. Install jadx or set the JADX_PATH environment "
+                "variable to the executable (.exe) or JAR."
+            ) from e
         except subprocess.TimeoutExpired:
             console.print("[yellow]jadx timeout[/yellow]")
         return output_dir
@@ -286,6 +406,23 @@ class ValidationEngine:
 
     def _load_validation_rules(self) -> Dict[str, ValidationRule]:
         rules = {
+            # MobSFScan rule IDs - match actual output
+            "android_manifest_missing_explicit_allow_backup": ValidationRule(
+                rule_id="android_manifest_missing_explicit_allow_backup",
+                patterns=[r'android:allowBackup\s*=\s*["\']true["\']', r'<application(?![^>]*android:allowBackup)'],
+                anti_patterns=[r'android:allowBackup\s*=\s*["\']false["\']', r'<!-- *backup disabled'],
+                context_required=[],
+                dynamic_indicators=[],
+                min_confidence=0.6
+            ),
+            "android_task_hijacking2": ValidationRule(
+                rule_id="android_task_hijacking2",
+                patterns=[r'<activity[^>]*android:exported\s*=\s*["\']true["\']', r'<intent-filter>'],
+                anti_patterns=[r'android:taskAffinity\s*=\s*["\']["\']', r'android:launchMode\s*=\s*["\']singleInstance["\']'],
+                context_required=[],
+                dynamic_indicators=[],
+                min_confidence=0.7
+            ),
             "android_sql_injection": ValidationRule(
                 rule_id="android_sql_injection",
                 patterns=[r'rawQuery\s*\([^,]+\+', r'execSQL\s*\([^)]*\+', r'query\([^)]*\+[^)]*\)'],
@@ -317,14 +454,6 @@ class ValidationEngine:
                 context_required=['android.webkit.WebView'],
                 dynamic_indicators=['loadUrl', 'loadDataWithBaseURL'],
                 min_confidence=0.8
-            ),
-            "android_exported": ValidationRule(
-                rule_id="android_exported",
-                patterns=[r'android:exported="true"', r'<intent-filter>'],
-                anti_patterns=[r'android:permission=', r'android:protectionLevel="signature"', r'<!-- *disabled'],
-                context_required=[],
-                dynamic_indicators=['ContentProvider', 'BroadcastReceiver'],
-                min_confidence=0.85
             ),
         }
         return rules
@@ -621,13 +750,26 @@ class AnalysisRAGTracker:
         self.rag_dir = work_dir / "rag_store"
         self.rag_dir.mkdir(exist_ok=True)
 
-        self.llm = build_openrouter_llm(model)
-        self.embeddings = build_openrouter_embeddings("openai/text-embedding-3-large")
+        self.enabled = True
+        self.llm: Optional[Any] = None
+        self.embeddings = None
+        self.vectorstore: Optional[Chroma] = None
 
-        self.vectorstore = Chroma(
-            persist_directory=str(self.rag_dir),
-            embedding_function=self.embeddings
-        )
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            console.print("[yellow]RAG disabled: OPENAI_API_KEY not set[/yellow]")
+            self.enabled = False
+        else:
+            try:
+                self.llm = build_openai_llm(model)
+                self.embeddings = build_openai_embeddings()
+                self.vectorstore = Chroma(
+                    persist_directory=str(self.rag_dir),
+                    embedding_function=self.embeddings
+                )
+            except Exception as e:
+                console.print(f"[yellow]RAG disabled due to initialization failure: {e}[/yellow]")
+                self.enabled = False
 
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
@@ -678,9 +820,17 @@ class AnalysisRAGTracker:
         - Validated: {self.analysis_state['validated_count']}
         """
         flat_meta = self._flatten_metadata({"phase": phase, "timestamp": timestamp, "apk": self.analysis_state["apk_name"], **data})
-        doc = Document(page_content=content, metadata=flat_meta)
-        self.vectorstore.add_documents([doc])
-        console.print(f"[dim]📝 RAG: Logged phase '{phase}'[/dim]")
+        if self.enabled and self.vectorstore:
+            doc = Document(page_content=content, metadata=flat_meta)
+            try:
+                self.vectorstore.add_documents([doc])
+                console.print(f"[dim]📝 RAG: Logged phase '{phase}'[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]RAG logging disabled due to error: {e}[/yellow]")
+                self.enabled = False
+                self.vectorstore = None
+        else:
+            console.print(f"[dim]RAG disabled - phase '{phase}' not indexed[/dim]")
 
     def log_finding_validation(self, finding: Finding):
         content = f"""
@@ -705,72 +855,109 @@ class AnalysisRAGTracker:
             "status": finding.validation_status.value if finding.validation_status else "unknown",
             "confidence": finding.validation_confidence
         })
-        self.vectorstore.add_documents([Document(page_content=content, metadata=flat_meta)])
+        if self.enabled and self.vectorstore:
+            try:
+                self.vectorstore.add_documents([Document(page_content=content, metadata=flat_meta)])
+            except Exception as e:
+                console.print(f"[yellow]RAG logging disabled due to error: {e}[/yellow]")
+                self.enabled = False
+                self.vectorstore = None
 
     def query(self, question: str) -> str:
-        qa = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=self.vectorstore.as_retriever(search_kwargs={"k": 5}),
-            return_source_documents=True
-        )
-        context = f"""
-        Current analysis state:
-        - Phase: {self.analysis_state['current_phase']}
-        - Completed: {', '.join(self.analysis_state['phases_completed'])}
-        - Findings: {self.analysis_state['findings_count']}
-        - Critical Issues: {len(self.analysis_state['critical_issues'])}
+        if not (self.enabled and self.vectorstore and self.llm):
+            return "RAG tracking is disabled."
+        try:
+            qa = RetrievalQA.from_chain_type(
+                llm=self.llm,
+                chain_type="stuff",
+                retriever=self.vectorstore.as_retriever(search_kwargs={"k": 5}),
+                return_source_documents=True
+            )
+            context = f"""
+            Current analysis state:
+            - Phase: {self.analysis_state['current_phase']}
+            - Completed: {', '.join(self.analysis_state['phases_completed'])}
+            - Findings: {self.analysis_state['findings_count']}
+            - Critical Issues: {len(self.analysis_state['critical_issues'])}
 
-        Question: {question}
-        """
-        result = qa.invoke({"query": context})
-        return result["result"]
+            Question: {question}
+            """
+            result = qa.invoke({"query": context})
+            return result["result"]
+        except Exception as e:
+            console.print(f"[yellow]RAG query failed: {e}[/yellow]")
+            self.enabled = False
+            self.vectorstore = None
+            return "RAG tracking encountered an error and has been disabled."
 
     def generate_intelligent_summary(self) -> Dict[str, Any]:
-        queries = [
-            "What are the most critical security issues found?",
-            "Which findings require immediate attention?",
-            "What percentage of findings were validated as true positives?",
-            "Are there any patterns in the false positives?",
-            "What are the main areas of concern in this application?"
-        ]
-        insights = []
-        for q in queries:
-            insights.append(self.query(q))
+        metrics = {
+            "total_findings": self.analysis_state["findings_count"],
+            "validated": self.analysis_state["validated_count"],
+            "phases_completed": len(self.analysis_state["phases_completed"])
+        }
+        if not (self.enabled and self.llm):
+            return {
+                "executive_summary": "RAG features were disabled; no AI summary available.",
+                "metrics": metrics
+            }
+        
+        # Create a direct summary based on analysis state without complex RAG queries
         synthesis_prompt = f"""
-        Based on the following analysis insights, create a concise security summary (italian):
-        {' '.join(insights)}
-        State: {json.dumps(self.analysis_state)}
-        Provide:
-        1) Executive summary (2-3 frasi)
-        2) Top 3 criticità
-        3) Risk level (Critical/High/Medium/Low) con motivazione
-        4) 3 remediation prioritarie
+        Analizza i seguenti risultati di sicurezza Android e crea un riassunto esecutivo in italiano:
+
+        Stato dell'analisi:
+        - APK analizzato: {self.analysis_state.get('apk_name', 'Unknown')}
+        - Fasi completate: {', '.join(self.analysis_state.get('phases_completed', []))}
+        - Totale findings: {self.analysis_state.get('findings_count', 0)}
+        - Findings validati: {self.analysis_state.get('validated_count', 0)}
+        - Issues critici: {len(self.analysis_state.get('critical_issues', []))}
+
+        Crea un riassunto che includa:
+        1) Riassunto esecutivo (2-3 frasi)
+        2) Livello di rischio generale (Critical/High/Medium/Low)
+        3) Raccomandazioni principali
+
+        Rispondi in italiano, sii conciso ma informativo.
         """
-        response = self.llm.predict(synthesis_prompt)
+        
+        try:
+            response = self.llm.invoke(synthesis_prompt).content
+            if not response or response.strip() == "":
+                # Fallback summary if LLM returns empty
+                response = f"Analisi completata per {self.analysis_state.get('apk_name', 'APK')}. " \
+                          f"Trovati {self.analysis_state.get('findings_count', 0)} findings, " \
+                          f"{self.analysis_state.get('validated_count', 0)} validati. " \
+                          f"Livello di rischio: {'High' if len(self.analysis_state.get('critical_issues', [])) > 0 else 'Medium'}."
+        except Exception as e:
+            console.print(f"[yellow]AI summary generation failed: {e}[/yellow]")
+            response = f"Errore nella generazione del riassunto AI. Analisi completata con {self.analysis_state.get('findings_count', 0)} findings."
+        
         return {
             "executive_summary": response,
-            "metrics": {
-                "total_findings": self.analysis_state["findings_count"],
-                "validated": self.analysis_state["validated_count"],
-                "phases_completed": len(self.analysis_state["phases_completed"])
-            }
+            "metrics": metrics
         }
 
 # ===================== Enhanced Pipeline con RAG & Indexing =====================
 class EnhancedAndroidSecurityAgent(AndroidSecurityAgent):
     def __init__(self, work_dir: Path, validation_level: ValidationLevel = ValidationLevel.MODERATE,
-                 use_rag: bool = True, model: str = "openai/gpt-5"):
+                 use_rag: bool = True, model: str = DEFAULT_OPENAI_LLM_MODEL):
         super().__init__(work_dir, validation_level)
+        self.rag_tracker: Optional[AnalysisRAGTracker] = None
         self.use_rag = use_rag
         if use_rag:
-            self.rag_tracker = AnalysisRAGTracker(work_dir, model)
+            tracker = AnalysisRAGTracker(work_dir, model)
+            if getattr(tracker, "enabled", False):
+                self.rag_tracker = tracker
+            else:
+                console.print("[yellow]RAG features disabled - continuing without RAG[/yellow]")
+                self.use_rag = False
 
-    def analyze(self, apk_path: Path) -> Tuple[Path, Optional[Dict]]:
+    def analyze(self, apk_path: Path, interactive: bool = False) -> Tuple[Path, Optional[Dict]]:
         console.print(f"\n[bold cyan]🔍 Enhanced Security Analysis with RAG Tracking[/bold cyan]")
         console.print(f"APK: {apk_path.name}\n")
 
-        if self.use_rag:
+        if self.use_rag and self.rag_tracker:
             self.rag_tracker.analysis_state["apk_name"] = apk_path.name
             self.rag_tracker.analysis_state["start_time"] = datetime.datetime.now().isoformat()
             self.rag_tracker.log_phase("initialization", {
@@ -781,25 +968,48 @@ class EnhancedAndroidSecurityAgent(AndroidSecurityAgent):
         with console.status("[bold blue]Decompiling APK with apktool/JADX...[/bold blue]"):
             source_dir = self.decompiler.decompile(apk_path)
 
-        if self.use_rag:
+        if self.use_rag and self.rag_tracker:
             self.rag_tracker.log_phase("decompilation", {
                 "source_dir": str(source_dir),
                 "files_extracted": len(list(source_dir.rglob('*')))
             })
-            # Indicizza sorgente in RAG (java + xml)
+            # Indicizza sorgente in RAG (java + xml) con gestione batch per grandi APK
             console.print("\n[bold blue]Indexing source code into RAG...[/bold blue]")
             docs: List[Document] = []
-            splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)  # Chunk più piccoli
+            
+            # Limita il numero di file per evitare token limit
+            max_files = 200  # Limite per evitare overflow
+            file_count = 0
+            
             for ext in ("*.java", "*.xml"):
                 for file in source_dir.rglob(ext):
+                    if file_count >= max_files:
+                        console.print(f"[yellow]Limiting indexing to {max_files} files to avoid token limits[/yellow]")
+                        break
                     try:
                         text = file.read_text(errors="ignore")
+                        if len(text) > 10000:  # Skip file molto grandi
+                            text = text[:10000] + "... [truncated]"
                         for chunk in splitter.split_text(text):
-                            docs.append(Document(page_content=chunk, metadata={"file": str(file)}))
+                            if len(chunk.strip()) > 50:  # Solo chunk significativi
+                                docs.append(Document(page_content=chunk, metadata={"file": str(file)}))
+                        file_count += 1
                     except Exception as e:
                         console.print(f"[yellow]Skip file {file}: {e}[/yellow]")
-            if docs:
-                self.rag_tracker.vectorstore.add_documents(docs)
+                        
+            if docs and getattr(self.rag_tracker, "enabled", False) and getattr(self.rag_tracker, "vectorstore", None):
+                try:
+                    # Indicizza in batch per evitare token limit
+                    batch_size = 50
+                    for i in range(0, len(docs), batch_size):
+                        batch = docs[i:i+batch_size]
+                        self.rag_tracker.vectorstore.add_documents(batch)
+                        console.print(f"[dim]Indexed batch {i//batch_size + 1}/{(len(docs)-1)//batch_size + 1}[/dim]")
+                except Exception as e:
+                    console.print(f"[yellow]RAG source indexing disabled due to error: {e}[/yellow]")
+                    self.rag_tracker.enabled = False
+                    self.rag_tracker.vectorstore = None
             self.rag_tracker.log_phase("source_indexed", {"files_indexed": len(docs)})
 
         console.print("\n[bold blue]Running MobSFScan on decompiled source...[/bold blue]")
@@ -809,7 +1019,7 @@ class EnhancedAndroidSecurityAgent(AndroidSecurityAgent):
         findings = self._parse_mobsfscan_output(scan_output)
         console.print(f"[green]Found {len(findings)} initial findings[/green]")
 
-        if self.use_rag:
+        if self.use_rag and self.rag_tracker:
             self.rag_tracker.analysis_state["findings_count"] = len(findings)
             self.rag_tracker.log_phase("scanning", {
                 "tool": "mobsfscan",
@@ -825,10 +1035,10 @@ class EnhancedAndroidSecurityAgent(AndroidSecurityAgent):
         for finding in track(findings, description="Validating..."):
             validated = validator.validate_finding(finding)
             validated_findings.append(validated)
-            if self.use_rag:
+            if self.use_rag and self.rag_tracker:
                 self.rag_tracker.log_finding_validation(validated)
 
-        if self.use_rag:
+        if self.use_rag and self.rag_tracker:
             tp_count = len([f for f in validated_findings if f.validation_status == FindingCategory.TRUE_POSITIVE])
             critical = [f for f in validated_findings if f.validation_status == FindingCategory.TRUE_POSITIVE and f.severity.upper() == "HIGH"]
             self.rag_tracker.analysis_state["validated_count"] = len(validated_findings)
@@ -844,14 +1054,15 @@ class EnhancedAndroidSecurityAgent(AndroidSecurityAgent):
         reporter.generate_report(validated_findings, report_path)
 
         intelligent_summary = None
-        if self.use_rag:
+        if self.use_rag and self.rag_tracker:
             console.print("\n[bold blue]Generating AI-powered summary...[/bold blue]")
             intelligent_summary = self.rag_tracker.generate_intelligent_summary()
             summary_path = self.work_dir / "intelligent_summary.json"
             with open(summary_path, 'w', encoding='utf-8') as f:
                 json.dump(intelligent_summary, f, indent=2)
             console.print("[green]AI Summary generated[/green]")
-            self._interactive_rag_session()
+            # Avvia la sessione interattiva se richiesta
+            self._interactive_rag_session(auto_start=interactive)
 
         return report_path, intelligent_summary
 
@@ -870,27 +1081,43 @@ class EnhancedAndroidSecurityAgent(AndroidSecurityAgent):
                 dist[sev] += 1
         return json.dumps(dist)
 
-    def _interactive_rag_session(self):
+    def _interactive_rag_session(self, auto_start: bool = False):
+        if not auto_start:
+            console.print("\n[bold cyan]💬 Interactive RAG Analysis Available[/bold cyan]")
+            console.print("Per avviare la sessione interattiva, usa: --interactive")
+            console.print("Oppure fai query programmatiche tramite l'API RAG")
+            return
+            
         console.print("\n[bold cyan]💬 Interactive RAG Analysis[/bold cyan]")
-        console.print("Esempi: 'Dove viene gestito SSL?', 'Quali WebView hanno JS abilitato?'\n(Digita 'exit' per uscire)\n")
+        console.print("Esempi: 'Dove viene gestito SSL?', 'Quali WebView hanno JS abilitato?'")
+        console.print("(Digita 'exit' per uscire)\n")
+        
         while True:
             try:
                 question = console.input("[bold]Q:[/bold] ")
                 if question.lower() in ['exit', 'quit', 'q']:
                     break
+                if not question.strip():
+                    continue
+                    
                 answer = self.rag_tracker.query(question)
                 console.print(f"[green]A:[/green] {answer}\n")
+                
             except KeyboardInterrupt:
                 break
+            except Exception as e:
+                console.print(f"[yellow]Errore nella query: {e}[/yellow]")
+                
         console.print("\n[dim]RAG session ended[/dim]")
 
 # ===================== Main =====================
 def main():
-    parser = argparse.ArgumentParser(description="Android Security Agent with Source Validation and RAG (OpenRouter)")
+    parser = argparse.ArgumentParser(description="Android Security Agent with Source Validation and RAG (OpenAI)")
     parser.add_argument("apk", type=Path, help="Path to APK file")
     parser.add_argument("--validation-level", choices=["strict", "moderate", "lenient"], default="moderate", help="Validation strictness level")
     parser.add_argument("--no-rag", action="store_true", help="Disable RAG tracking and AI features")
-    parser.add_argument("--model", default="openai/gpt-5", help="LLM model via OpenRouter (es: openai/gpt-5, openrouter/auto, openai/gpt-4o-mini)")
+    parser.add_argument("--interactive", action="store_true", help="Enable interactive RAG chat session after analysis")
+    parser.add_argument("--model", default=DEFAULT_OPENAI_LLM_MODEL, help="LLM model via OpenAI (es: gpt-5-mini-2025-08-07)")
     parser.add_argument("--work-dir", type=Path, help="Working directory for analysis")
 
     args = parser.parse_args()
@@ -904,7 +1131,7 @@ def main():
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if not args.no_rag and not os.getenv("OPENAI_API_KEY"):
-        console.print("[yellow]Warning: OPENAI_API_KEY non impostata (chiave OpenRouter). Le funzioni RAG useranno fallback nullo.[/yellow]")
+        console.print("[yellow]Warning: OPENAI_API_KEY non impostata (chiave OpenAI). Le funzioni RAG useranno fallback nullo.[/yellow]")
 
     try:
         agent = EnhancedAndroidSecurityAgent(
@@ -913,7 +1140,7 @@ def main():
             use_rag=not args.no_rag,
             model=args.model
         )
-        report_path, ai_summary = agent.analyze(args.apk)
+        report_path, ai_summary = agent.analyze(args.apk, interactive=args.interactive)
         console.print(f"\n[bold green]✅ Analysis Complete![/bold green]")
         console.print(f"📁 Results: {work_dir}")
         console.print(f"📊 Report: {report_path}")
